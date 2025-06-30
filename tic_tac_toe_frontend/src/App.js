@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from "react";
 import "./App.css";
+import {
+  createGame,
+  makeMove,
+  getGame,
+  getMatchHistory,
+  getBackendUrl,
+} from "./api";
 
 // Constants for theming (match spec colors)
 const COLORS = {
@@ -15,115 +22,122 @@ const COLORS = {
   draw: "#C0C0C0",
 };
 
-const EMPTY_BOARD = [
-  ["", "", ""],
-  ["", "", ""],
-  ["", "", ""]
-];
+/*
+ * New implementation: All logic flows via backend API.
+ * State: current game object ({game_id, board, current_player, winner, ...}),
+ * move loading, error, match history loaded from backend.
+ */
 
-// Helper to clone the board deeply
-function cloneBoard(board) {
-  return board.map((row) => [...row]);
+function blankBoardDisplay() {
+  return [
+    ["", "", ""],
+    ["", "", ""],
+    ["", "", ""]
+  ];
 }
 
 // PUBLIC_INTERFACE
 function App() {
-  // state for board, player, winner, history, move count
-  const [board, setBoard] = useState(cloneBoard(EMPTY_BOARD));
-  const [currentPlayer, setCurrentPlayer] = useState("X");
-  const [winner, setWinner] = useState(null); // 'X', 'O', or 'draw' or null
-  const [matchHistory, setMatchHistory] = useState([]); // Array of { board, winner }
-  const [moveCount, setMoveCount] = useState(0);
+  const [game, setGame] = useState(null); // Holds backend game object
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [matchHistory, setMatchHistory] = useState([]); // Array of { game_id, winner, ... }
+  const [historyReloadFlag, setHistoryReloadFlag] = useState(0);
+
+  // On mount: start new game and load match history
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const g = await createGame();
+        setGame(g);
+        const h = await getMatchHistory();
+        setMatchHistory(h);
+      } catch (e) {
+        setError(`${e.message}`);
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  // When historyReloadFlag changes, reload history only
+  useEffect(() => {
+    (async () => {
+      try {
+        const h = await getMatchHistory();
+        setMatchHistory(h);
+      } catch (e) {
+        setError(`${e.message}`);
+      }
+    })();
+  }, [historyReloadFlag]);
 
   // PUBLIC_INTERFACE
-  function handleCellClick(rowIdx, colIdx) {
-    if (winner || board[rowIdx][colIdx]) return; // ignore if game over or cell filled
-
-    const newBoard = cloneBoard(board);
-    newBoard[rowIdx][colIdx] = currentPlayer;
-    const nextMoveCount = moveCount + 1;
-
-    setBoard(newBoard);
-    setMoveCount(nextMoveCount);
-
-    const gameResult = checkGameOver(newBoard, currentPlayer, nextMoveCount);
-
-    if (gameResult === "X" || gameResult === "O") {
-      setWinner(gameResult);
-      addMatchToHistory(newBoard, gameResult);
-    } else if (gameResult === "draw") {
-      setWinner("draw");
-      addMatchToHistory(newBoard, "draw");
-    } else {
-      // next player
-      setCurrentPlayer(currentPlayer === "X" ? "O" : "X");
+  async function handleCellClick(rowIdx, colIdx) {
+    if (loading || !game || game.state !== "in_progress") return;
+    if (game.board[rowIdx][colIdx] !== null) return; // cell already taken
+    setLoading(true);
+    setError("");
+    try {
+      const updated = await makeMove(game.game_id, rowIdx, colIdx);
+      setGame(updated);
+      if (updated.state !== "in_progress") {
+        // Game finished, reload match history soon
+        setTimeout(() => setHistoryReloadFlag(f => f + 1), 250);
+      }
+    } catch (e) {
+      setError(`${e.message}`);
     }
+    setLoading(false);
   }
 
   // PUBLIC_INTERFACE
-  function startNewGame() {
-    setBoard(cloneBoard(EMPTY_BOARD));
-    setCurrentPlayer((prev) =>
-      matchHistory.length % 2 === 0 ? "X" : "O"
-    ); // alternate who starts
-    setWinner(null);
-    setMoveCount(0);
-  }
-
-  // PUBLIC_INTERFACE
-  function resetHistory() {
-    setMatchHistory([]);
-    startNewGame();
-  }
-
-  // Add last match to history
-  function addMatchToHistory(boardSnapshot, winnerSnapshot) {
-    setMatchHistory((history) => [
-      {
-        board: cloneBoard(boardSnapshot),
-        winner: winnerSnapshot,
-        timestamp: new Date().toISOString(),
-      },
-      ...history,
-    ]);
-  }
-
-  // Returns "X", "O", "draw", or null
-  function checkGameOver(_board, currentPlayer, totalFilled) {
-    // Rows, columns & diagonals
-    for (let i = 0; i < 3; i++) {
-      if (
-        _board[i][0] &&
-        _board[i][0] === _board[i][1] &&
-        _board[i][1] === _board[i][2]
-      )
-        return _board[i][0];
-      if (
-        _board[0][i] &&
-        _board[0][i] === _board[1][i] &&
-        _board[1][i] === _board[2][i]
-      )
-        return _board[0][i];
+  async function startNewGame() {
+    if (loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const g = await createGame();
+      setGame(g);
+    } catch (e) {
+      setError(`${e.message}`);
     }
-    // Diagonals:
-    if (
-      _board[0][0] &&
-      _board[0][0] === _board[1][1] &&
-      _board[1][1] === _board[2][2]
-    )
-      return _board[0][0];
-    if (
-      _board[0][2] &&
-      _board[0][2] === _board[1][1] &&
-      _board[1][1] === _board[2][0]
-    )
-      return _board[0][2];
-    // Draw:
-    if (totalFilled >= 9) return "draw";
-    return null;
+    setLoading(false);
   }
 
-  // Styles
+  // PUBLIC_INTERFACE
+  async function resetHistory() {
+    // Just reload history (since backend history is in-memory, this will appear cleared after server restart)
+    setLoading(true);
+    setError("");
+    try {
+      // No backend "delete all history"; just start new game and force reload.
+      await startNewGame();
+      setHistoryReloadFlag(f => f + 1);
+    } catch (e) {
+      setError(`${e.message}`);
+    }
+    setLoading(false);
+  }
+
+  // Board rendering compatible with backend board shape (null = empty)
+  const displayedBoard = game && Array.isArray(game.board)
+    ? game.board.map(row => row.map(cell => cell || ""))
+    : blankBoardDisplay();
+
+  // Winner, Draw and UI Status extraction
+  const winner =
+    game && game.state === "won"
+      ? game.winner
+      : game && game.state === "draw"
+      ? "draw"
+      : null;
+
+  const currentPlayer =
+    game && game.state === "in_progress" ? game.current_player : null;
+
+  // Styles remain the same as before
   const boardStyle = {
     display: "grid",
     gridTemplateRows: "repeat(3, 1fr)",
@@ -153,7 +167,7 @@ function App() {
         : value === "O"
         ? COLORS.playerO
         : COLORS.secondary,
-    cursor: value || winner ? "not-allowed" : "pointer",
+    cursor: value || winner || loading ? "not-allowed" : "pointer",
     boxShadow: "0 1px 2px 0 rgba(60,50,10,.05)",
     transition: "background 0.18s, color 0.22s, border 0.22s",
     outline: "none",
@@ -161,6 +175,7 @@ function App() {
     alignItems: "center",
     justifyContent: "center",
     userSelect: "none",
+    opacity: loading ? 0.6 : 1.0
   });
 
   const flexRow = {
@@ -215,8 +230,6 @@ function App() {
       ? COLORS.draw
       : COLORS.accent;
 
-  // Responsive font and layout (media queries via inline style are limited, so rely on % maxWidth and minWidth as above)
-
   return (
     <div className="App" style={{
       background: "#f9fafb",
@@ -250,6 +263,13 @@ function App() {
             A simple, modern, interactive 3x3 game
           </span>
         </div>
+        <div style={{marginBottom: 12, minHeight: 22}}>
+          <span style={{color:"#d12b4a",fontWeight:600}}>{error}</span>
+          {loading && <span style={{color: COLORS.primary, marginLeft: 14}}>Loading...</span>}
+          <span style={{ float: "right", fontSize: 11, color: "#ccc", marginLeft: 14 }}>
+            <a href={getBackendUrl()} rel="noopener noreferrer" style={{ color: "#bbb" }}>Backend</a>
+          </span>
+        </div>
         <div style={flexRow}>
           {/* Main board and controls */}
           <div style={leftPanel}>
@@ -262,16 +282,22 @@ function App() {
                 [0, 1, 2].map((col) => (
                   <button
                     key={row * 3 + col}
-                    style={cellStyle(board[row][col])}
-                    disabled={!!board[row][col] || !!winner}
+                    style={cellStyle(displayedBoard[row][col])}
+                    disabled={
+                      !!displayedBoard[row][col] ||
+                      !!winner ||
+                      loading ||
+                      !game ||
+                      game.state !== "in_progress"
+                    }
                     aria-label={
-                      board[row][col]
-                        ? `Cell ${row + 1},${col + 1}, filled with ${board[row][col]}`
-                        : `Cell ${row + 1},${col + 1}, empty, click to place ${currentPlayer}`
+                      displayedBoard[row][col]
+                        ? `Cell ${row + 1},${col + 1}, filled with ${displayedBoard[row][col]}`
+                        : `Cell ${row + 1},${col + 1}, empty, click to place ${game && game.current_player}`
                     }
                     onClick={() => handleCellClick(row, col)}
                   >
-                    {board[row][col]}
+                    {displayedBoard[row][col]}
                   </button>
                 ))
               )}
@@ -285,14 +311,14 @@ function App() {
               color: infoColor,
               letterSpacing: 1.5,
             }}>
-              {!winner && (
+              {game && !winner && game.state==="in_progress" && (
                 <span>
                   Current player:{" "}
                   <span style={{
                     color:
-                      currentPlayer === "X" ? COLORS.playerX : COLORS.playerO
+                      game.current_player === "X" ? COLORS.playerX : COLORS.playerO
                   }}>
-                    {currentPlayer}
+                    {game.current_player}
                   </span>
                 </span>
               )}
@@ -333,6 +359,7 @@ function App() {
                 }}
                 onClick={startNewGame}
                 aria-label="Start new game"
+                disabled={loading}
               >
                 Start New Game
               </button>
@@ -351,6 +378,7 @@ function App() {
                 }}
                 onClick={resetHistory}
                 aria-label="Reset match history"
+                disabled={loading}
               >
                 Reset History
               </button>
@@ -382,7 +410,7 @@ function App() {
             ) : (
               matchHistory.slice(0, 7).map((item, idx) => (
                 <div
-                  key={idx}
+                  key={item.game_id || idx}
                   style={historyItemStyle(item)}
                   tabIndex={0}
                   aria-label={`History match ${idx + 1}, winner: ${item.winner}`}
@@ -396,40 +424,32 @@ function App() {
                       {item.winner === "draw" &&
                         <span style={{ color: COLORS.draw }}>Draw</span>}
                     </span>{" "}
-                    {item.winner !== "draw" ? "won" : ""}
+                    {item.winner !== "draw" && item.winner ? "won" : ""}
                   </div>
                   <div style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(3,24px)",
-                    gap: "1px 3px",
-                    margin: "4px 0"
+                    fontSize: 12,
+                    color: "#fff",
+                    opacity: 0.8,
+                    margin: "2px 0 4px"
                   }}>
-                    {item.board.flat().map((cell, cidx) => (
-                      <div
-                        key={cidx}
-                        style={{
-                          width: 22,
-                          height: 22,
-                          background: "#2c3953",
-                          borderRadius: 3,
-                          color:
-                            cell === "X" ? COLORS.playerX : cell === "O" ? COLORS.playerO : "#566585",
-                          fontWeight: 600,
-                          fontSize: 15,
-                          textAlign: "center",
-                          lineHeight: "22px",
-                          border: "1px solid #33425e"
-                        }}>
-                        {cell}
-                      </div>
-                    ))}
+                    Game ID: <span style={{fontFamily:"monospace"}}>{item.game_id?.slice(0, 8)}...</span>
                   </div>
-                  <div style={{ opacity: 0.55, fontSize: 12, marginTop: 2 }}>
-                    {new Date(item.timestamp).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      second: "2-digit"
-                    })}
+                  <div style={{
+                    opacity: 0.55,
+                    fontSize: 12,
+                    marginTop: 2
+                  }}>
+                    {item.state === "won" && !!item.winner &&
+                      <span>
+                        Winner: <b>{item.winner}</b>
+                      </span>}
+                    {item.state === "draw" && (
+                      <span>Draw</span>
+                    )}<span>{" | "}</span>
+                    {["player_x", "player_o"].map(role =>
+                      item[role] &&
+                      <span key={role} style={{marginLeft:8,opacity:0.8}}>{role.toUpperCase()}: {item[role]}</span>
+                    )}
                   </div>
                 </div>
               ))
