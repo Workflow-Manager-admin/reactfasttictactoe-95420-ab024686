@@ -8,6 +8,16 @@
   --border-color: #e9ecef;
   --button-bg: #007bff;
   --button-text: #ffffff;
+
+  /* Tic Tac Toe custom colors */
+  --kavia-primary: #0583F2;
+  --kavia-secondary: #1B263B;
+  --kavia-accent: #FFD60A;
+  --kavia-board-bg: #F6F7FB;
+  --kavia-cell-bg: #fff;
+  --kavia-x: #0583F2;
+  --kavia-o: #FFD60A;
+  --kavia-draw: #C0C0C0;
 }
 
 [data-theme="dark"] {
